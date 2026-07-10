@@ -157,6 +157,6 @@ exporters:
 
 ## Open items
 
-- Confirm exporter `type` name `jaeger_opensearch` (dir stays `jaegerexporter`).
-- Helm: rewrite `jaeger-collector.yaml` to run `otelcol-custom` with pipeline `otlp → batch → jaeger_opensearch` (follow-up; not this spec).
-- Partial-bulk-failure durability (item-level retry) is a possible future upgrade beyond current parity.
+- Confirm exporter `type` name `jaegerexporter`, not `jaeger_opensearch` : Confired
+- Helm: rewrite `jaeger-collector.yaml` to run `otelcol-custom` with pipeline `otlp → batch → jaeger_opensearch` (follow-up; not this spec). Ignore
+- Partial-bulk-failure durability (item-level retry) is a possible future upgrade beyond current parity: Ignore for now
