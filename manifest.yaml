@@ -98,6 +98,8 @@ exporters:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/tencentcloudlogserviceexporter v0.156.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/tinybirdexporter v0.156.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/zipkinexporter v0.156.0
+  - gomod: github.com/malayh/otel-modules/exporter/jaegerexporter v0.1.0
+    path: ./exporter/jaegerexporter
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.156.0
