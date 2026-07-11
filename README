@@ -1,4 +1,0 @@
-Custom modules for otel collector
-
-## Exporters
-- `jaegerexporter`: Exports spans in jaeger format to opensearch. This is to replace the jaeger collector. It doesn't handle index lifecycle or exprity, there needs to be externally handled.
