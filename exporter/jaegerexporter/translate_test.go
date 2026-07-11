@@ -17,6 +17,7 @@ func TestToDBModelFormat(t *testing.T) {
 	rs := traces.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "acme")
 	rs.Resource().Attributes().PutStr("host.name", "h1")
+	rs.Resource().Attributes().PutInt("process.pid", 1)
 
 	ss := rs.ScopeSpans().AppendEmpty()
 	ss.Scope().SetName("scope")
@@ -30,6 +31,7 @@ func TestToDBModelFormat(t *testing.T) {
 	sp.SetName("op")
 	sp.SetKind(ptrace.SpanKindServer)
 	sp.Status().SetCode(ptrace.StatusCodeError)
+	sp.Status().SetMessage("boom")
 	sp.SetStartTimestamp(pcommon.NewTimestampFromTime(start))
 	sp.SetEndTimestamp(pcommon.NewTimestampFromTime(start.Add(5 * time.Millisecond)))
 	sp.Attributes().PutInt("http.status_code", 500)
@@ -41,7 +43,6 @@ func TestToDBModelFormat(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
-	elevateTags(&spans[0])
 	s := spans[0]
 
 	if s.StartTime != 1600000000123456 {
@@ -63,27 +64,41 @@ func TestToDBModelFormat(t *testing.T) {
 		t.Errorf("References = %+v", s.References)
 	}
 
-	if s.Tag["span@kind"] != "server" {
-		t.Errorf("elevated span@kind = %v", s.Tag["span@kind"])
+	if s.ParentSpanID != "" {
+		t.Errorf("ParentSpanID must not be populated (jaeger 2.1.0 uses references only), got %s", s.ParentSpanID)
 	}
-	if s.Tag["error"] != true {
-		t.Errorf("elevated error = %v", s.Tag["error"])
+	if s.Flags != 0 {
+		t.Errorf("Flags must not be populated, got %d", s.Flags)
 	}
-	for _, kv := range s.Tags {
-		if kv.Key == "span.kind" || kv.Key == "error" {
-			t.Errorf("tag %q should have been elevated out of tags", kv.Key)
-		}
+	if s.Tag != nil {
+		t.Errorf("Tag map must be nil (no tag elevation), got %v", s.Tag)
 	}
-	if !hasTag(s.Tags, "http.status_code", dbmodel.Int64Type) {
-		t.Errorf("missing http.status_code int64 tag: %+v", s.Tags)
+
+	if !hasTagValue(s.Tags, "span.kind", dbmodel.StringType, "server") {
+		t.Errorf("span.kind must stay in tags as string 'server': %+v", s.Tags)
 	}
-	if !hasTag(s.Tags, "otel.scope.name", dbmodel.StringType) {
+	if !hasTagValue(s.Tags, "otel.status_code", dbmodel.StringType, "ERROR") {
+		t.Errorf("missing otel.status_code=ERROR: %+v", s.Tags)
+	}
+	if !hasTagValue(s.Tags, "error", dbmodel.BoolType, "true") {
+		t.Errorf("missing error=true (bool, stringified): %+v", s.Tags)
+	}
+	if !hasTagValue(s.Tags, "otel.status_description", dbmodel.StringType, "boom") {
+		t.Errorf("missing otel.status_description: %+v", s.Tags)
+	}
+	if !hasTagValue(s.Tags, "http.status_code", dbmodel.Int64Type, "500") {
+		t.Errorf("http.status_code must be stringified int64 '500': %+v", s.Tags)
+	}
+	if !hasTagValue(s.Tags, "otel.scope.name", dbmodel.StringType, "scope") {
 		t.Errorf("missing otel.scope.name tag: %+v", s.Tags)
 	}
-	if !hasTag(s.Process.Tags, "host.name", dbmodel.StringType) {
+	if !hasTagValue(s.Process.Tags, "process.pid", dbmodel.Int64Type, "1") {
+		t.Errorf("process.pid must be stringified int64 '1': %+v", s.Process.Tags)
+	}
+	if !hasTagValue(s.Process.Tags, "host.name", dbmodel.StringType, "h1") {
 		t.Errorf("missing host.name process tag: %+v", s.Process.Tags)
 	}
-	if len(s.Logs) != 1 || !hasTag(s.Logs[0].Fields, "event", dbmodel.StringType) {
+	if len(s.Logs) != 1 || !hasTagValue(s.Logs[0].Fields, "event", dbmodel.StringType, "ev") {
 		t.Errorf("logs = %+v", s.Logs)
 	}
 
@@ -92,12 +107,66 @@ func TestToDBModelFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	js := string(raw)
-	if strings.Contains(js, "@timestamp") {
-		t.Errorf("@timestamp must not be written for legacy indices: %s", js)
+	for _, bad := range []string{"@timestamp", `"tag":{`, "span@kind", "parentSpanID", `"flags"`} {
+		if strings.Contains(js, bad) {
+			t.Errorf("marshaled span must not contain %q\n%s", bad, js)
+		}
 	}
-	for _, want := range []string{`"startTimeMillis"`, `"tag":{`, `"span@kind":"server"`, `"error":true`, `"refType":"CHILD_OF"`} {
+	for _, want := range []string{
+		`"startTimeMillis"`,
+		`"refType":"CHILD_OF"`,
+		`"key":"span.kind","type":"string","value":"server"`,
+		`"key":"otel.status_code","type":"string","value":"ERROR"`,
+		`"key":"error","type":"bool","value":"true"`,
+		`"key":"http.status_code","type":"int64","value":"500"`,
+	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("marshaled span missing %s\n%s", want, js)
+		}
+	}
+}
+
+func TestToDBModelEmptySlices(t *testing.T) {
+	traces := ptrace.NewTraces()
+	rs := traces.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("service.name", "acme")
+	ss := rs.ScopeSpans().AppendEmpty()
+
+	start := time.Unix(1600000000, 0)
+	sp := ss.Spans().AppendEmpty()
+	sp.SetName("root")
+	sp.SetStartTimestamp(pcommon.NewTimestampFromTime(start))
+	sp.SetEndTimestamp(pcommon.NewTimestampFromTime(start))
+
+	spans := ToDBModel(traces)
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	s := spans[0]
+
+	if s.References == nil || len(s.References) != 0 {
+		t.Errorf("References must be empty non-nil slice, got %#v", s.References)
+	}
+	if s.Logs == nil || len(s.Logs) != 0 {
+		t.Errorf("Logs must be empty non-nil slice, got %#v", s.Logs)
+	}
+	if s.Tags == nil {
+		t.Errorf("Tags must be non-nil, got nil")
+	}
+
+	raw, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(raw)
+	for _, want := range []string{`"references":[]`, `"logs":[]`, `"tags":[]`} {
+		if !strings.Contains(js, want) {
+			t.Errorf("root span must serialize %s (not null)\n%s", want, js)
+		}
+	}
+	for _, bad := range []string{"parentSpanID", `"flags"`, `"tag":{`, "@timestamp", "null"} {
+		if strings.Contains(js, bad) {
+			t.Errorf("root span must not contain %q\n%s", bad, js)
 		}
 	}
 }
@@ -115,9 +184,9 @@ func TestIndexNaming(t *testing.T) {
 	}
 }
 
-func hasTag(kvs []dbmodel.KeyValue, key string, typ dbmodel.ValueType) bool {
+func hasTagValue(kvs []dbmodel.KeyValue, key string, typ dbmodel.ValueType, value string) bool {
 	for _, kv := range kvs {
-		if kv.Key == key && kv.Type == typ {
+		if kv.Key == key && kv.Type == typ && kv.Value == value {
 			return true
 		}
 	}

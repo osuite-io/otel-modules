@@ -10,7 +10,7 @@ package jaegerexporter
 
 import (
 	"encoding/hex"
-	"strings"
+	"strconv"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -32,13 +32,9 @@ const (
 	noServiceName    = "OTLPResourceNoServiceName"
 	eventNameAttr    = "event"
 	statusOk         = "OK"
+	statusError      = "ERROR"
 	tagW3CTraceState = "w3c.tracestate"
 )
-
-var elevatedTagKeys = map[string]bool{
-	model.SpanKindKey: true,
-	"error":           true,
-}
 
 func ToDBModel(td ptrace.Traces) []dbmodel.Span {
 	resourceSpans := td.ResourceSpans()
@@ -84,10 +80,6 @@ func resourceSpansToDbSpans(resourceSpans ptrace.ResourceSpans) []dbmodel.Span {
 func resourceToDbProcess(resource pcommon.Resource) dbmodel.Process {
 	process := dbmodel.Process{}
 	attrs := resource.Attributes()
-	if attrs.Len() == 0 {
-		process.ServiceName = noServiceName
-		return process
-	}
 	tags := make([]dbmodel.KeyValue, 0, attrs.Len())
 	for key, attr := range attrs.All() {
 		if key == serviceNameKey {
@@ -95,6 +87,9 @@ func resourceToDbProcess(resource pcommon.Resource) dbmodel.Process {
 			continue
 		}
 		tags = append(tags, attributeToDbTag(key, attr))
+	}
+	if process.ServiceName == "" {
+		process.ServiceName = noServiceName
 	}
 	process.Tags = tags
 	return process
@@ -108,28 +103,18 @@ func appendTagsFromAttributes(dest []dbmodel.KeyValue, attrs pcommon.Map) []dbmo
 }
 
 func attributeToDbTag(key string, attr pcommon.Value) dbmodel.KeyValue {
-	var tag dbmodel.KeyValue
-	switch attr.Type() {
-	case pcommon.ValueTypeBytes:
-		tag = dbmodel.KeyValue{Key: key, Value: hex.EncodeToString(attr.Bytes().AsRaw())}
-	case pcommon.ValueTypeMap, pcommon.ValueTypeSlice:
-		tag = dbmodel.KeyValue{Key: key, Value: attr.AsString()}
-	default:
-		tag = dbmodel.KeyValue{Key: key, Value: attr.AsRaw()}
-	}
 	switch attr.Type() {
 	case pcommon.ValueTypeInt:
-		tag.Type = dbmodel.Int64Type
+		return dbmodel.KeyValue{Key: key, Type: dbmodel.Int64Type, Value: strconv.FormatInt(attr.Int(), 10)}
 	case pcommon.ValueTypeBool:
-		tag.Type = dbmodel.BoolType
+		return dbmodel.KeyValue{Key: key, Type: dbmodel.BoolType, Value: strconv.FormatBool(attr.Bool())}
 	case pcommon.ValueTypeDouble:
-		tag.Type = dbmodel.Float64Type
+		return dbmodel.KeyValue{Key: key, Type: dbmodel.Float64Type, Value: strconv.FormatFloat(attr.Double(), 'g', 10, 64)}
 	case pcommon.ValueTypeBytes:
-		tag.Type = dbmodel.BinaryType
+		return dbmodel.KeyValue{Key: key, Type: dbmodel.BinaryType, Value: hex.EncodeToString(attr.Bytes().AsRaw())}
 	default:
-		tag.Type = dbmodel.StringType
+		return dbmodel.KeyValue{Key: key, Type: dbmodel.StringType, Value: attr.AsString()}
 	}
-	return tag
 }
 
 func spanToDbSpan(span ptrace.Span, libraryTags pcommon.InstrumentationScope, process dbmodel.Process) dbmodel.Span {
@@ -139,7 +124,6 @@ func spanToDbSpan(span ptrace.Span, libraryTags pcommon.InstrumentationScope, pr
 	return dbmodel.Span{
 		TraceID:         traceID,
 		SpanID:          dbmodel.SpanID(span.SpanID().String()),
-		ParentSpanID:    parentSpanID,
 		OperationName:   span.Name(),
 		References:      linksToDbSpanRefs(span.Links(), parentSpanID, traceID),
 		StartTime:       model.TimeAsEpochMicroseconds(startTime),
@@ -148,40 +132,23 @@ func spanToDbSpan(span ptrace.Span, libraryTags pcommon.InstrumentationScope, pr
 		Tags:            getDbSpanTags(span, libraryTags),
 		Logs:            spanEventsToDbSpanLogs(span.Events()),
 		Process:         process,
-		Flags:           span.Flags(),
 	}
 }
 
 func getDbSpanTags(span ptrace.Span, scope pcommon.InstrumentationScope) []dbmodel.KeyValue {
-	var spanKindTag, statusCodeTag, statusMsgTag dbmodel.KeyValue
-	var spanKindTagFound, statusCodeTagFound, statusMsgTagFound bool
-
 	libraryTags, libraryTagsFound := getTagsFromInstrumentationLibrary(scope)
+	spanKindTag, spanKindTagFound := getTagFromSpanKind(span.Kind())
+	status := span.Status()
+	statusTags := getTagsFromStatusCode(status.Code())
+	statusMsgTag, statusMsgTagFound := getTagFromStatusMsg(status.Message())
+	traceStateTags, traceStateTagsFound := getTagsFromTraceState(span.TraceState().AsRaw())
 
-	tagsCount := span.Attributes().Len() + len(libraryTags)
-
-	spanKindTag, spanKindTagFound = getTagFromSpanKind(span.Kind())
+	tagsCount := span.Attributes().Len() + len(libraryTags) + len(statusTags) + len(traceStateTags)
 	if spanKindTagFound {
 		tagsCount++
 	}
-	status := span.Status()
-	statusCodeTag, statusCodeTagFound = getTagFromStatusCode(status.Code())
-	if statusCodeTagFound {
-		tagsCount++
-	}
-
-	statusMsgTag, statusMsgTagFound = getTagFromStatusMsg(status.Message())
 	if statusMsgTagFound {
 		tagsCount++
-	}
-
-	traceStateTags, traceStateTagsFound := getTagsFromTraceState(span.TraceState().AsRaw())
-	if traceStateTagsFound {
-		tagsCount += len(traceStateTags)
-	}
-
-	if tagsCount == 0 {
-		return nil
 	}
 
 	tags := make([]dbmodel.KeyValue, 0, tagsCount)
@@ -192,9 +159,7 @@ func getDbSpanTags(span ptrace.Span, scope pcommon.InstrumentationScope) []dbmod
 	if spanKindTagFound {
 		tags = append(tags, spanKindTag)
 	}
-	if statusCodeTagFound {
-		tags = append(tags, statusCodeTag)
-	}
+	tags = append(tags, statusTags...)
 	if statusMsgTagFound {
 		tags = append(tags, statusMsgTag)
 	}
@@ -208,10 +173,6 @@ func linksToDbSpanRefs(links ptrace.SpanLinkSlice, parentSpanID dbmodel.SpanID, 
 	refsCount := links.Len()
 	if parentSpanID != "" {
 		refsCount++
-	}
-
-	if refsCount == 0 {
-		return nil
 	}
 
 	refs := make([]dbmodel.Reference, 0, refsCount)
@@ -244,10 +205,6 @@ func linksToDbSpanRefs(links ptrace.SpanLinkSlice, parentSpanID dbmodel.SpanID, 
 }
 
 func spanEventsToDbSpanLogs(events ptrace.SpanEventSlice) []dbmodel.Log {
-	if events.Len() == 0 {
-		return nil
-	}
-
 	logs := make([]dbmodel.Log, 0, events.Len())
 	for i := 0; i < events.Len(); i++ {
 		event := events.At(i)
@@ -294,22 +251,19 @@ func getTagFromSpanKind(spanKind ptrace.SpanKind) (dbmodel.KeyValue, bool) {
 	}, true
 }
 
-func getTagFromStatusCode(statusCode ptrace.StatusCode) (dbmodel.KeyValue, bool) {
+func getTagsFromStatusCode(statusCode ptrace.StatusCode) []dbmodel.KeyValue {
 	switch statusCode {
-	case ptrace.StatusCodeOk:
-		return dbmodel.KeyValue{
-			Key:   otelStatusCode,
-			Type:  dbmodel.StringType,
-			Value: statusOk,
-		}, true
 	case ptrace.StatusCodeError:
-		return dbmodel.KeyValue{
-			Key:   "error",
-			Type:  dbmodel.BoolType,
-			Value: true,
-		}, true
+		return []dbmodel.KeyValue{
+			{Key: otelStatusCode, Type: dbmodel.StringType, Value: statusError},
+			{Key: "error", Type: dbmodel.BoolType, Value: "true"},
+		}
+	case ptrace.StatusCodeOk:
+		return []dbmodel.KeyValue{
+			{Key: otelStatusCode, Type: dbmodel.StringType, Value: statusOk},
+		}
 	default:
-		return dbmodel.KeyValue{}, false
+		return nil
 	}
 }
 
@@ -372,28 +326,4 @@ func strToDbSpanRefType(attr string) dbmodel.ReferenceType {
 		return dbmodel.ChildOf
 	}
 	return dbmodel.FollowsFrom
-}
-
-func elevateTags(span *dbmodel.Span) {
-	span.Process.Tags, span.Process.Tag = splitElevatedTags(span.Process.Tags)
-	span.Tags, span.Tag = splitElevatedTags(span.Tags)
-}
-
-func splitElevatedTags(keyValues []dbmodel.KeyValue) ([]dbmodel.KeyValue, map[string]any) {
-	var tagsMap map[string]any
-	var kvs []dbmodel.KeyValue
-	for _, kv := range keyValues {
-		if kv.Type != dbmodel.BinaryType && elevatedTagKeys[kv.Key] {
-			if tagsMap == nil {
-				tagsMap = map[string]any{}
-			}
-			tagsMap[strings.ReplaceAll(kv.Key, ".", "@")] = kv.Value
-		} else {
-			kvs = append(kvs, kv)
-		}
-	}
-	if kvs == nil {
-		kvs = make([]dbmodel.KeyValue, 0)
-	}
-	return kvs, tagsMap
 }

@@ -77,7 +77,6 @@ func (e *jaegerExporter) ConsumeTraces(_ context.Context, td ptrace.Traces) erro
 	spans := ToDBModel(td)
 	for i := range spans {
 		span := &spans[i]
-		elevateTags(span)
 
 		date := time.UnixMicro(int64(span.StartTime)).UTC().Format(e.cfg.DateLayout)
 
