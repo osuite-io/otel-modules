@@ -85,6 +85,7 @@ GET <quota_endpoint>          Authorization: Bearer <key>
 
 - Collector compares `used` vs `allowed` as opaque numbers. `unit` is informational (human/metrics only) — the collector never interprets it, so "5 GB vs 5 M samples" is entirely the endpoint's choice.
 - A signal absent from the response ⇒ that instance has no limit (fail-open).
+- units are just extra data, we just care about `used<allowed` 
 
 ## Processor config (`ingestlimiter`)
 
@@ -104,7 +105,7 @@ signal_key:      ""        # optional override of the "traces"/"logs"/"metrics" 
 
 ## Behavior & edge cases
 
-- **Fail-open** (configurable) on: endpoint unreachable, non-2xx, unparseable body, signal absent, `allowed <= 0`/missing, or last-good poll older than `max_staleness`. Always log + emit a metric.
+- **Fail-open** (configurable) on: endpoint unreachable, non-2xx, unparseable body, signal absent, `allowed <= 0`/missing, or last-good poll older than `max_staleness`. Always log + emit a metric. Also, we should retry on failure with exponential back-off. Also if `used>allowed` and api fails 3 times, go to fail open mode
 - **No durable state.** Restart → poll immediately; until the first successful poll, `fail_open` governs.
 - Over-budget batches are **rejected whole** — no partial drops.
 - Overshoot ≈ ingestion_rate × poll_interval; shorten `poll_interval` if ingestion is bursty.

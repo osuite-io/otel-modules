@@ -1,0 +1,26 @@
+services:
+  otelcol:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: otelcol-custom:0.156.0
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-ingestlimiter.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+    depends_on:
+      - quota-stub
+
+  quota-stub:
+    image: hashicorp/http-echo:latest
+    command:
+      - "-listen=:5678"
+      - '-text={"traces":{"used":10,"allowed":5},"logs":{"used":10,"allowed":5},"metrics":{"used":10,"allowed":5}}'
+
+  telemetrygen:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.156.0
+    profiles: ["tools"]
+    command: ["traces", "--otlp-endpoint", "otelcol:4317", "--otlp-insecure", "--traces", "5"]

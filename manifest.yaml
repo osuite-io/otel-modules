@@ -133,6 +133,8 @@ processors:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor v0.156.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.156.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/unrollprocessor v0.156.0
+  - gomod: github.com/malayh/otel-modules/processor/ingestlimiter v0.1.0
+    path: ./processor/ingestlimiter
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/nopreceiver v0.156.0

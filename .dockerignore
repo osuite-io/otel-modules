@@ -2,3 +2,5 @@
 !manifest.yaml
 !exporter
 !exporter/**
+!processor
+!processor/**
