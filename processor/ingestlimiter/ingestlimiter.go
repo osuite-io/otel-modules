@@ -262,6 +262,9 @@ func (l *limiter) poll(ctx context.Context) error {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return err
 	}
+	l.logger.Info("ingestlimiter: quota poll succeeded",
+		zap.String("signal", l.signal),
+		zap.ByteString("response", body))
 	entry, ok := payload[l.key]
 	l.applyPoll(entry, ok)
 	return nil
